@@ -274,6 +274,7 @@ class Interface {
 }
 
 class OSCEvent extends Event {}
+class SubmixEvent extends Event {}
 
 class EQBand {
 	static PEAK = 0;
@@ -410,9 +411,9 @@ class EQPlot {
 }
 
 class Channel {
-	static INPUT = 0;
-	static OUTPUT = 1;
-	static PLAYBACK = 2;
+	static INPUT = 'input';
+	static OUTPUT = 'output';
+	static PLAYBACK = 'playback';
 
 	static #inputNames = [
 		'Mic/Line 1', 'Mic/Line 2', 'Inst/Line 3', 'Inst/Line 4',
@@ -471,96 +472,80 @@ class Channel {
 		'autolevel/risetime',
 	]);
 
+	static submixChanged() {
+		event = new SubmixEvent('change');
+		const selects = document.querySelectorAll('select.channel-volume-output');
+		const index = document.forms.view.elements.submix.value;
+		for (const select of selects) {
+			select.selectedIndex = index;
+			select.dispatchEvent(event);
+		}
+	}
+
 	constructor(type, index, iface, left) {
 		const template = document.getElementById('channel-template');
 		const fragment = template.content.cloneNode(true);
+		const volumeRange = fragment.getElementById('volume-range');
+		const volumeNumber = fragment.getElementById('volume-number');
+		const panNumber = fragment.getElementById('pan')
+		const stereo = fragment.getElementById('stereo');
+		const name = fragment.getElementById('channel-name');
+		const view = document.forms.view.elements;
 
-		let name, prefix;
-		const flags = new Set();
+		let defName;
+		const prefix = `/${type}/${index + 1}`;
+		const flags = [];
 		switch (type) {
 		case Channel.INPUT:
-			flags.add('input');
+			flags.push('input');
 			if (index == 0 || index == 1)
-				flags.add('mic');
+				flags.push('48v');
 			if (index == 2 || index == 3)
-				flags.add('inst');
+				flags.push('hi-z');
+			if (index <= 3)
+				flags.push('autoset');
 			if (index <= 7) {
-				flags.add('analog');
-				flags.add('analog-input');
+				if (index >= 2)
+					flags.push('reflevel');
+				flags.push('gain');
 			}
-			if (index >= 4 && index <= 7)
-				flags.add('line');
-			name = Channel.#inputNames[index];
-			prefix = `/input/${index + 1}`;
+			defName = Channel.#inputNames[index];
 			break;
 		case Channel.PLAYBACK:
-			flags.add('playback');
-			name = Channel.#outputNames[index];
-			prefix = `/playback/${index + 1}`;
+			flags.push('playback');
+			defName = Channel.#outputNames[index];
 			break;
 		case Channel.OUTPUT:
-			flags.add('output');
+			flags.push('output');
 			if (index <= 7)
-				flags.add('analog');
-			name = Channel.#outputNames[index];
-			prefix = `/output/${index + 1}`;
-			break;
-		}
+				flags.push('reflevel');
+			defName = Channel.#outputNames[index];
 
-		for (const node of fragment.querySelectorAll('[data-flags]')) {
-			let found
-			for (const flag of node.dataset.flags.split(' ')) {
-				if (flags.has(flag)) {
-					found = true;
-					break;
-				}
-			}
-			if (!found)
-				node.remove();
-		}
-
-		this.volumeDiv = fragment.getElementById('channel-volume');
-
-		const nameDiv = fragment.getElementById('channel-name');
-		nameDiv.textContent = name;
-
-		this.level = fragment.getElementById('channel-level');
-		iface.methods.set(prefix + '/level', (args) => {
-			const value = Math.max(args[0], -65);
-			if (this.level.value != value)
-				this.level.value = value;
-		});
-
-		const stereo = fragment.getElementById('stereo');
-		if (left) {
-			stereo.addEventListener('change', (event) => {
-				if (event.target.checked) {
-					left.volumeDiv.insertBefore(this.level, left.level.nextSibling);
-				} else {
-					this.volumeDiv.insertBefore(this.level, this.volumeDiv.firstElementChild);
-				}
-			});
-			fragment.children[0].classList.add('channel-right')
-		}
-		if (type == Channel.OUTPUT) {
 			const selects = document.querySelectorAll('select.channel-volume-output');
 			for (const select of selects) {
-				const option = new Option(name);
-				option.dataset.output = index;
+				const option = new Option(defName);
+				option.value = index;
 				select.add(option);
 			}
 			if (left) {
 				stereo.addEventListener('change', (event) => {
-					const options = document.querySelectorAll('option[data-output="' + index + '"]');
+					const options = document.querySelectorAll('option[value="' + index + '"]');
 					for (const option of options)
 						option.disabled = event.target.checked;
 				});
 			}
-		}
 
-		const volumeRange = fragment.getElementById('volume-range');
-		const volumeNumber = fragment.getElementById('volume-number');
-		if (type == Channel.OUTPUT) {
+			const submix = fragment.getElementById('submix');
+			submix.value = index;
+			fragment.children[0].addEventListener('click', (event) => {
+				if (submix.checked)
+					return;
+				if (view.routingmode.value == 'submix') {
+					view.submix.value = index;
+					Channel.submixChanged();
+				}
+			});
+
 			volumeRange.oninput = volumeNumber.onchange = (event) => {
 				volumeRange.value = event.target.value;
 				volumeNumber.value = event.target.value;
@@ -570,28 +555,104 @@ class Channel {
 				volumeRange.value = args[0];
 				volumeNumber.value = args[0];
 			});
-		} else {
+			iface.bind(prefix + '/pan', ',i', panNumber, 'valueAsNumber', 'change');
+			break;
+		}
+		fragment.children[0].dataset.flags = flags.join(' ');
+		if (type != Channel.OUTPUT) {
 			const output = fragment.getElementById('volume-output');
 			output.addEventListener('change', (event) => {
-				volumeRange.value = volumeNumber.value = this.volume[event.target.selectedIndex];
+				const outputIndex = event.target.selectedIndex;
+				volumeRange.value = volumeNumber.value = this.volume[outputIndex];
+				panNumber.value = this.pan[outputIndex];
+				if (view.routingmode.value == 'submix' && !(event instanceof SubmixEvent)) {
+					view.submix.value = outputIndex;
+					Channel.submixChanged();
+				}
 			});
 			volumeRange.oninput = volumeNumber.onchange = (event) => {
 				volumeRange.value = volumeNumber.value = event.target.value;
 				this.volume[output.selectedIndex] = event.target.value;
-				iface.send(`/mix/${output.selectedIndex+1}${prefix}`, ',f', [event.target.value]);
+				iface.send(`/mix/${output.selectedIndex+1}${prefix}`, ',fi', [event.target.value, this.pan[output.selectedIndex]]);
+			};
+			panNumber.onchange = (event) => {
+				this.pan[output.selectedIndex] = event.target.value;
+				iface.send(`/mix/${output.selectedIndex+1}${prefix}`, ',fi', [this.volume[output.selectedIndex], event.target.value]);
 			};
 			this.volume = [];
+			this.pan = [];
 			for (let i = 0; i < 20; ++i) {
 				this.volume[i] = -65;
+				this.pan[i] = 0;
 				iface.methods.set(`/mix/${i+1}${prefix}`, (args) => {
-					const value = Math.max(args[0], -65);
-					this.volume[i] = value;
+					const vol = Math.max(Math.round(args[0] / volumeNumber.step) * volumeNumber.step, -65);
+					const pan = args[1];
+					this.volume[i] = vol;
+					if (pan != null)
+						this.pan[i] = pan;
 					if (output.selectedIndex == i) {
-						volumeRange.value = value;
-						volumeNumber.value = value;
+						volumeRange.value = vol;
+						volumeNumber.value = vol;
+						if (pan != null)
+							panNumber.value = pan;
 					}
 				});
 			}
+		}
+
+		for (const node of fragment.querySelectorAll(`[data-type]:not([data-type~="${type}"])`))
+			node.remove();
+
+		this.volumeDiv = fragment.getElementById('channel-volume');
+		this.meterValueDiv = fragment.getElementById('channel-meter-value');
+
+		name.value = defName;
+		name.addEventListener('dblclick', (event) => {
+			name.readOnly = false;
+			name.select();
+		});
+		name.addEventListener('blur', (event) => name.readOnly = true);
+		iface.methods.set(prefix + '/name', (args) => {
+			name.value = args[0];
+			if (type == Channel.OUTPUT) {
+				const options = document.querySelectorAll(`.channel-volume-output > option[value="${index}"]`);
+				for (const option of options)
+					option.textContent = args[0];
+			}
+		});
+		const nameForm = fragment.getElementById('channel-name-form');
+		nameForm.addEventListener('submit', (event) => {
+			event.preventDefault();
+			name.setSelectionRange(0, 0);
+			name.blur();
+			iface.send(prefix + '/name', ',s', [name.value]);
+			return false;
+		});
+
+		this.meter = fragment.getElementById('volume-meter');
+		this.meterValue = fragment.getElementById('volume-meter-value');
+		iface.methods.set(prefix + '/level', (args) => {
+			let index = 0;
+			if (view.meterrms.checked) index += 1;
+			if (view.meterfx.checked && args.length >= 4) index += 2;
+			const value = Math.max(args[index], -65);
+			if (this.meter.value != value) {
+				this.meter.value = value;
+				this.meterValue.textContent = value == -Infinity ? 'UFL' : value.toFixed(1);
+			}
+		});
+
+		if (left) {
+			stereo.addEventListener('change', (event) => {
+				if (event.target.checked) {
+					left.volumeDiv.insertBefore(this.meter, left.meter.nextSibling);
+					left.meterValueDiv.insertBefore(this.meterValue, left.meterValue.nextSibling);
+				} else {
+					this.volumeDiv.insertBefore(this.meter, this.volumeDiv.firstElementChild);
+					this.meterValueDiv.insertBefore(this.meterValue, this.meterValueDiv.firstElementChild);
+				}
+			});
+			fragment.children[0].classList.add('channel-right')
 		}
 
 		const onPanelButtonChanged = (event) => {
@@ -811,6 +872,11 @@ function setupInterface() {
 		}
 	}
 
+	const routingMode = document.getElementById('routing-mode');
+	routingMode.addEventListener('change', Channel.submixChanged);
+	document.forms.view.elements.submix.value = 0;
+	Channel.submixChanged();
+
 	iface.bind('/reverb', ',i', document.getElementById('reverb-enabled'), 'checked', 'change');
 	const reverbType = document.getElementById('reverb-type');
 	const reverbRoomScale = document.getElementById('reverb-roomscale');
@@ -870,7 +936,13 @@ function setupInterface() {
 	/* allow scrolling on number and range inputs */
 	const wheel = (event) => {
 		event.preventDefault();
-		event.target.valueAsNumber = Math.min(Math.max(event.target.valueAsNumber - event.deltaY * Number(event.target.step) / 180, event.target.min), event.target.max);
+		const step = Number(event.target.step) || 1;
+		let value = event.target.valueAsNumber;
+		if (event.deltaY < 0)
+			value += step;
+		else if (event.deltaY > 0)
+			value -= step;
+		event.target.valueAsNumber = Math.min(Math.max(value, event.target.min), event.target.max);
 		event.target.dispatchEvent(new Event(event.target.type == 'range' ? 'input' : 'change'));
 	};
 	const focus = (event) => event.target.addEventListener('wheel', wheel, {passive: false});

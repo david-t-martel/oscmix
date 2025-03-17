@@ -4,9 +4,15 @@
 #include "../arg.h"
 #include "../sysex.h"
 
+enum {
+	FIREFACE = 0,
+	BABYFACE = 1,
+};
+
 static snd_seq_t *seq;
 static int sflag;
 static int wflag;
+static int tflag;
 
 static void
 usage(void)
@@ -40,9 +46,13 @@ dumpsysex(const char *prefix, const unsigned char *buf, size_t len)
 		printf("skipping unexpected sysex\n");
 		return;
 	}
-	if (pos[5] != 0) {
+	if (pos[5] != 0 || tflag == BABYFACE) {
 		printf("subid=%d", pos[5]);
 		for (pos += sizeof hdr + 1; pos != end; pos += 5) {
+			if (pos[4] & 0xf0) {
+				printf("\tbad encoding\n");
+				return;
+			}
 			regval = getle32_7bit(pos);
 			printf("%c%.8lX", pos == buf + sizeof hdr + 1 ? '\t' : ' ', regval);
 		}
@@ -60,7 +70,7 @@ dumpsysex(const char *prefix, const unsigned char *buf, size_t len)
 		par ^= par >> 1;
 		printf("%.4X\t%.4X", reg, val);
 		if (par & 1)
-			printf("bad parity");
+			printf("\tbad parity");
 		fputc('\n', stdout);
 	}
 	fflush(stdout);
@@ -161,7 +171,7 @@ main(int argc, char *argv[])
 	int err, flags;
 	snd_seq_addr_t dest, self;
 	snd_seq_port_subscribe_t *sub;
-	char *end;
+	char *arg, *end;
 
 	ARGBEGIN {
 	case 's':
@@ -169,6 +179,17 @@ main(int argc, char *argv[])
 		break;
 	case 'w':
 		wflag = 1;
+		break;
+	case 't':
+		arg = EARGF(usage());
+		if (strcmp(arg, "fireface") == 0) {
+			tflag = FIREFACE;
+		} else if (strcmp(arg, "babyface") == 0) {
+			tflag = BABYFACE;
+		} else {
+			fprintf(stderr, "unknown device '%s'\n", arg);
+			return 1;
+		}
 		break;
 	default:
 		usage();
