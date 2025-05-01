@@ -277,12 +277,25 @@ setchannel(struct context *ctx, struct oscmsg *msg)
 	long index;
 
 	index = strtol(ctx->pattern + 1, &end, 10);
-	if (*end != '/')
+	if (*end != '/' || index < 1)
 		return;
-	if (strcmp(ctx->node->name, "input") == 0)
-		ctx->param.in = index - 1;
-	else
-		ctx->param.out = index - 1;
+	--index;
+	if (strcmp(ctx->node->name, "input") == 0) {
+		if (index >= device->inputslen + device->outputslen)
+			return;
+		ctx->param.in = index;
+	} else if (strcmp(ctx->node->name, "playback") == 0) {
+		if (index >= device->outputslen)
+			return;
+		ctx->param.in = device->inputslen + index;
+	} else if (strcmp(ctx->node->name, "output") == 0) {
+		if (index >= device->outputslen)
+			return;
+		ctx->param.out = index;
+	} else {
+		assert(0);
+		return;
+	}
 	ctx->pattern = end;
 }
 
@@ -335,8 +348,7 @@ setinputmute(struct context *ctx, struct oscmsg *msg)
 	val = oscgetint(msg);
 	if (oscend(msg) != 0)
 		return;
-	assert((unsigned)ctx->param.in < device->inputslen);
-	/* mutex */
+	assert((unsigned)ctx->param.in < device->inputslen + device->outputslen);
 	in = &inputs[ctx->param.in];
 	setval(ctx, val);
 	muteinput(in, val);
@@ -672,6 +684,7 @@ setmix(struct context *ctx, struct oscmsg *msg)
 	struct level level;
 	struct output *out;
 	struct input *in;
+	int base;
 
 	i = strtoul(ctx->pattern + 1, &end, 10) - 1;
 	if (*end != '/' || i >= device->outputslen)
@@ -680,11 +693,16 @@ setmix(struct context *ctx, struct oscmsg *msg)
 	ctx->pattern = end;
 	out = &outputs[i];
 
-	if (!oscmatch(ctx->pattern, "input", &end))
+	if (oscmatch(ctx->pattern, "input", &end))
+		base = 0;
+	else if (oscmatch(ctx->pattern, "playback", &end))
+		base = device->inputslen;
+	else
 		return;
 	i = strtoul(end + 1, &end, 10) - 1;
-	if (*end || i >= device->inputslen + device->outputslen)
+	if (*end || i >= device->inputslen + device->outputslen - base)
 		return;
+	i += base;
 	ctx->param.in = i;
 	ctx->pattern = end;
 	in = &inputs[i];
@@ -696,8 +714,12 @@ setmix(struct context *ctx, struct oscmsg *msg)
 
 	calclevel(out, in, 1, &level);
 	level.width = in->width;
-	vol = oscgetfloat(msg);
-	level.vol = vol <= -65.f ? 0 : powf(10.f, vol / 20.f);
+	if (*msg->type == 'N') {
+		++msg->type;
+	} else {
+		vol = oscgetfloat(msg);
+		level.vol = vol <= -65.f ? 0 : powf(10.f, vol / 20.f);
+	}
 
 	if (*msg->type) {
 		level.pan = oscgetint(msg);
@@ -1102,7 +1124,7 @@ static const struct node eqtree[] = {
 	{"band3q", EQ_BAND3Q, .set=setfixed, .new=newfixed, .scale=0.1, .min=4, .max=99},
 	{"band3type", EQ_BAND3TYPE, .set=setenum, .new=newenum, .names=(const char *const[]){
 		"Peak", "High Shelf", "Low Pass", "High Pass",
-	}, .nameslen=3},
+	}, .nameslen=4},
 	{0},
 };
 
@@ -1211,7 +1233,9 @@ static const struct node roottree[] = {
 		{"loopback", .set=setoutputloopback},
 		{0},
 	}},
-	{"playback", .tree=(const struct node[]){
+	{"playback", .set=setchannel, .tree=(const struct node[]){
+		{"mute", .set=setinputmute},
+		{"stereo", .set=setinputstereo},
 		{0},
 	}},
 	{"mix", MIX, .set=setmix, .new=newmix},
