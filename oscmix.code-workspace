@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../liblo"
+		}
+	],
+	"settings": {},
+	"extensions": {
+		"recommendations": [
+			"github.copilot-chat"
+		]
+	}
+}
